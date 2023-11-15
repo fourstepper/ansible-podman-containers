@@ -1,0 +1,34 @@
+- name: "Make sure all defined volumes for {{ item.name }} exist"
+  file:
+    path: "{{ volume_path.split(':')[0] }}"
+    state: directory
+  loop_control:
+    loop_var: volume_path
+  with_items:
+    - "{{ item.volumes }}"
+  when: item.volumes | length > 0
+
+- name: "Create and start {{ item.name }}"
+  containers.podman.podman_container:
+    name: "{{ item.name }}"
+    image: "{{ item.image }}"
+    state: "started"
+    publish: "{{ item.publish | default([]) }}"
+    volumes: "{{ item.volumes | default([]) }}"
+    labels: "{{ item.labels | default({}) }}"
+    generate_systemd:
+      path: '~/.config/systemd/user/'
+      new: true
+
+- name: "Start the container-{{ item.name }}"
+  systemd_service:
+    name: "container-{{ item.name }}.service"
+    state: started
+    daemon_reload: true
+    scope: user
+
+- name: "Enable the container-{{ item.name }} service"
+  systemd_service:
+    name: "container-{{ item.name }}.service"
+    enabled: true
+    scope: user

@@ -1,0 +1,3 @@
+---
+# defaults file for ansible-podman-containers
+podman_containers: []
