@@ -2,33 +2,90 @@
   file:
     path: "{{ volume_path.split(':')[0] }}"
     state: directory
+  register: volumes
   loop_control:
     loop_var: volume_path
   with_items:
     - "{{ item.volumes }}"
-  when: item.volumes | length > 0
+  when: item.volumes|default([]) | length > 0
 
-- name: "Create and start {{ item.name }}"
+- name: "Assign volumes to container user for {{ item.name }} (podman unshare)"
+  become_method: containers.podman.podman_unshare
+  become: true
+  file:
+    path: "{{ volume_path.split(':')[0] }}"
+    state: directory
+    owner: "{{ item.runs_as_user }}"
+    group: "{{ item.runs_as_group }}"
+  register: unshare
+  loop_control:
+    loop_var: volume_path
+  with_items:
+    - "{{ item.volumes }}"
+  when:
+    - item.volumes|default([]) | length > 0
+    - item.runs_as_user|length > 0
+    - item.runs_as_group|length > 0
+
+- name: "Check if the systemd service file for {{ item.name }} exists"
+  stat:
+    path: "~/.config/systemd/user/container-{{ item.name }}.service"
+  register: service_file
+
+- name: Stop and disable the systemd service
+  systemd_service:
+    name: "container-{{ item.name }}.service"
+    state: "stopped"
+    enabled: "false"
+    daemon_reload: true
+    scope: user
+  when:
+    - item.REMOVE|default(false)
+    - service_file.stat.exists
+
+- name: "Remove the systemd service file for {{ item.name }}"
+  file:
+    path: "~/.config/systemd/user/container-{{ item.name }}.service"
+    state: absent
+  when:
+    - item.REMOVE|default(false)
+    - service_file.stat.exists
+
+- name: "Manage {{ item.name }} container"
   containers.podman.podman_container:
     name: "{{ item.name }}"
     image: "{{ item.image }}"
-    state: "started"
-    publish: "{{ item.publish | default([]) }}"
-    volumes: "{{ item.volumes | default([]) }}"
-    labels: "{{ item.labels | default({}) }}"
+    state: "{{ 'present' if not item.REMOVE|default(false) else 'absent' }}"
+    publish: "{{ item.publish|default([]) }}"
+    user: ""
+    volumes: "{{ item.volumes|default([]) }}"
+    expose: "{{ item.expose|default([]) }}"
+    labels: "{{ item.labels|default({}) }}"
+    network: "{{ item.network|default('slirp4netns') }}"
     generate_systemd:
       path: '~/.config/systemd/user/'
       new: true
+  register: container
 
-- name: "Start the container-{{ item.name }}"
+- name: "Check if the systemd service file for {{ item.name }} exists"
+  stat:
+    path: "~/.config/systemd/user/container-{{ item.name }}.service"
+  register: service_file
+
+- name: "Create the container-{{ item.name }}.service"
   systemd_service:
     name: "container-{{ item.name }}.service"
-    state: started
+    state: "started"
+    enabled: "true"
     daemon_reload: true
     scope: user
+  when:
+    - not item.REMOVE|default(false)
 
-- name: "Enable the container-{{ item.name }} service"
+- name: "Restart the container-{{ item.name }}.service"
   systemd_service:
     name: "container-{{ item.name }}.service"
-    enabled: true
+    state: "restarted"
     scope: user
+  when: |
+    volumes.changed or unshare.changed or container.changed
